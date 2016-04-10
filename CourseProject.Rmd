@@ -1,0 +1,156 @@
+---
+title: "Practical Machine Learning"
+author: "Martin"
+date: "April 10, 2016"
+output: html_document
+---
+
+## Prediction Assignment
+
+### Background
+Using devices such as JawboneUp, NikeFuelBand, and Fitbitit is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in
+their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it.  
+   
+In this project, the goal is to predict the manner in which 6 participants did their exercise using data from accelerators on the belt, forearm, arm, and dumbbell. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. 
+
+More information is available from the website: [http://groupware.les.inf.puc-rio.br/har](http://groupware.les.inf.puc-rio.br/har) (see the section on the Weight Lifting Exercise Dataset).   
+
+### Preparing the data and R packages  
+
+#### Load packages, set caching 
+
+```{r, message=FALSE}
+require(caret)
+require(corrplot)
+require(Rtsne)
+require(xgboost)
+require(stats)
+require(knitr)
+require(ggplot2)
+knitr::opts_chunk$set(cache=TRUE)
+```
+  
+#### Getting Data
+```{r}
+# load the CSV files as data.frame 
+train = read.csv("./data/pml-training.csv")
+test = read.csv("./data/pml-testing.csv")
+dim(train)
+dim(test)
+names(train)
+```  
+
+The raw training data has 19622 rows of observations and 158 features (predictors). Column `X` is an unusable row number. While the testing data has 20 rows and the same 158 features. There is one column of target outcome named `classe`.   
+
+#### Data cleaning
+
+Outcome has 5 levels in character format.   
+Convert the outcome to numeric, because it is easier for machine learning algorithms.   
+```{r}
+# convert character levels to numeric
+outcome.org = train[, "classe"]
+outcome = outcome.org 
+levels(outcome)
+```
+Extracting `belt`, `forearm`, `arm`, and `dumbell`, features from the data.  
+```{r}
+# filter columns on: belt, forearm, arm, dumbell
+filter = grepl("belt|arm|dumbell", names(train))
+train = train[, filter]
+test = test[, filter]
+train$classe = outcome.org
+num.class = length(levels(train$classe))
+levels(train$classe) = 1:num.class
+head(train$classe)
+```
+
+Removing columns with NAs.   
+```{r}
+# remove columns with NA, use test data as referal for NA
+cols.without.na = colSums(is.na(test)) == 0
+train = train[, cols.without.na]
+test = test[, cols.without.na]
+```
+
+### Preprocessing  
+
+#### Check for features's variance
+
+Based on the principal component analysis (PCA), it is important that features have maximum variance for maximum uniqueness, so that each feature is as distant as possible (as orthogonal as possible) from the other features.   
+```{r}
+# check for zero variance
+zero.var = nearZeroVar(train, saveMetrics=TRUE)
+zero.var
+```
+There are not features lacking variability. Therefore, none are removed.  
+
+## Model Building
+
+I decided to start with XGBoost extreme gradient boosting algorithm, to see if it would have acceptable performance. I fit the model on ptrain1, and instruct the "train" function to use 3-fold cross-validation to select optimal tuning parameters for the model.
+
+```{r eval = FALSE}
+set.seed(825)
+inTrain <- createDataPartition(y=train$classe, p=0.7, list=F)
+ptrain1 <- train[inTrain, ]
+ptrain2 <- train[-inTrain, ]
+# instruct train to use 3-fold CV to select optimal tuning parameters
+fitControl <- trainControl(method="cv", number=3, verboseIter=F)
+
+# fit model on ptrain1
+fit <- train(classe ~ ., data=ptrain1, method="xgbTree", trControl=fitControl)
+
+# print final model to see tuning parameters it chose
+fit$finalModel
+```
+
+I see that it decided to use 150 rounds
+
+## Model Evaluation and Selection
+
+Now, I use the fitted model to predict the label ("classe") in ptrain2, and show the confusion matrix to compare the predicted versus the actual labels:
+
+```{r}
+# use model to predict classe in validation set (ptrain2)
+preds <- predict(fit, newdata=ptrain2)
+
+# show confusion matrix to get estimate of out-of-sample error
+confusionMatrix(ptrain2$classe, preds)
+```
+
+The accuracy is 99.2%, thus my predicted accuracy for the out-of-sample error is 0.8%.
+
+Rather than trying additional algorithms, due to the accuracy, I will use XG Boost to predict on the test set.
+
+## Re-training the Selected Model
+
+Training the model on the full training set (train), rather than using a model trained on a reduced training set (ptrain1), in order to produce the more accurate predictions. 
+
+```{r}
+# re-fit model using full training set (train)
+fitControl <- trainControl(method="cv", number=3, verboseIter=F)
+fit <- train(classe ~ ., data=train, method="xgbTree", trControl=fitControl)
+```
+
+## Making Test Set Predictions
+
+using the model fit on train to predict the label for the observations in ptest, and writing those predictions to files
+
+```{r}
+# predict on test set
+preds <- predict(fit, newdata=test)
+
+# convert predictions to character vector
+preds <- as.character(preds)
+
+# create function to write predictions to files
+pml_write_files <- function(x) {
+    n <- length(x)
+    for(i in 1:n) {
+        filename <- paste0("problem_id_", i, ".txt")
+        write.table(x[i], file=filename, quote=F, row.names=F, col.names=F)
+    }
+}
+
+# create prediction files to submit
+pml_write_files(preds)
+```
